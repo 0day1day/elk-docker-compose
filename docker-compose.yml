@@ -1,0 +1,113 @@
+version: '2'
+
+services:
+  elasticsearch:
+    container_name:
+      elasticsearch
+    build:
+      context: elasticsearch/
+    privileged: true
+    volumes:
+      - ./elasticsearch/config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+      - elastic_data:/usr/share/elasticsearch/data
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+      bootstrap.memory_lock: 'true'
+      ES_JAVA_OPTS: '-Xms${MEMORY_GB}g -Xmx${MEMORY_GB}g'
+    networks:
+      - elk
+  kibana:
+    container_name:
+      kibana
+    build:
+      context: kibana/
+    privileged: true
+    environment:
+      ELASTICSEARCH_USERNAME: elastic
+      ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD}
+      VIRTUAL_HOST: ${LE_DOMAIN}
+      VIRTUAL_NETWORK: elk
+      VIRTUAL_PORT: 5601
+      LETSENCRYPT_HOST: ${LE_DOMAIN}
+      LETSENCRYPT_EMAIL: ${LE_EMAIL}
+    networks:
+      - elk
+    depends_on:
+      - elasticsearch
+  logstash:
+    container_name:
+      logstash
+    build:
+      context: logstash/
+    privileged: true
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+      LOGSTASH_USER: ${LOGSTASH_USER}
+      LOGSTASH_PASSWORD: ${LOGSTASH_PASSWORD}
+      xpack.monitoring.elasticsearch.url: http://elasticsearch:9200
+      xpack.monitoring.elasticsearch.username: elastic
+      xpack.monitoring.elasticsearch.password: ${ELASTIC_PASSWORD}
+    networks:
+      - elk
+    depends_on:
+      - elasticsearch
+  
+
+  nginx-proxy:
+    container_name:
+      nginx-proxy
+    restart: on-failure
+    image: jwilder/nginx-proxy:alpine
+    privileged: true
+    labels:
+      com.github.jrcs.letsencrypt_nginx_proxy_companion.nginx_proxy: 'true'
+    ports:
+      - 80:80
+      - 443:443
+      - 5000:5000
+      - 9200:9200
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - /etc/nginx/vhost.d
+      - /usr/share/nginx/html
+      - ./nginx/conf.d:/etc/nginx/conf.d
+    networks:
+      - elk
+  letsencrypt-nginx-proxy-companion:
+    container_name:
+      letsencrypt-nginx-proxy-companion
+    restart: on-failure
+    image: jrcs/letsencrypt-nginx-proxy-companion
+    privileged: true
+    volumes_from:
+      - nginx-proxy
+    volumes:
+      - ./nginx/certs:/etc/nginx/certs:rw
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - elk
+    depends_on:
+      - nginx-proxy
+
+  generate_config:
+    container_name:
+      generate_config
+    image: nginx:alpine
+    privileged: true
+    volumes:
+      - ./nginx/setup:/tmp/nginx_config
+    environment:
+      DOMAIN: ${LE_DOMAIN}
+    command: sh -c 'cd /tmp/nginx_config && envsubst < logstash.template > logstash.conf && envsubst < elasticsearch.template > elasticsearch.conf'
+
+volumes:
+  elastic_data:
+    #name: elastic_data
+    driver: local
+
+networks:
+  elk:
+    driver: bridge
